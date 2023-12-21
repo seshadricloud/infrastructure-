@@ -1,0 +1,695 @@
+#provider.tf
+
+provider "aws" {
+  # Configuration options
+   region = var.region
+}
+
+#output.tf
+
+output "petclinicname" {
+       value = aws_vpc.petclinic.id
+}
+
+#main.tf
+
+#vpc
+
+resource "aws_vpc" "petclinic" {
+  cidr_block       = var.cidr
+  instance_tenancy = "default"
+  enable_dns_hostnames = "true"
+
+  tags = {
+    Name = var.envname
+  }
+}
+
+#public subnet
+resource "aws_subnet" "pubsubnets" {
+  count = length(var.azs)
+  vpc_id     = aws_vpc.petclinic.id
+  cidr_block = element(var.pubsubnets,count.index)
+  availability_zone = element(var.azs,count.index)
+  map_public_ip_on_launch = true
+
+  tags = {
+    Name = "${var.envname}-pubsubnet-${count.index+1}"
+  }
+}
+
+#private subnet
+
+resource "aws_subnet" "privsubnets" {
+  count = length(var.azs)
+  vpc_id     = aws_vpc.petclinic.id
+  cidr_block = element(var.privsubnets,count.index)
+  availability_zone = element(var.azs,count.index)
+
+
+  tags = {
+    Name = "${var.envname}-privatesub-${count.index+1}"
+  }
+}
+
+#datasubnet
+
+resource "aws_subnet" "datasubnets" {
+  count = length(var.azs)
+  vpc_id     = aws_vpc.petclinic.id
+  cidr_block = element(var.datasubnets,count.index)
+  availability_zone = element(var.azs,count.index)
+
+
+  tags = {
+    Name = "${var.envname}-datasubnet-${count.index+1}"
+  }
+}
+
+#Internet gateway
+
+resource "aws_internet_gateway" "gw" {
+  vpc_id = aws_vpc.petclinic.id
+
+  tags = {
+    Name = "${var.envname}-igw"
+  }
+}
+
+#Natgatewy elastic ip
+
+resource "aws_eip" "nateip" {
+
+  vpc      = true
+
+  tags = {
+    Name = "${var.envname}-nateip"
+  }
+}
+
+#nate gateway
+
+resource "aws_nat_gateway" "natgw" {
+  allocation_id = aws_eip.nateip.id
+  subnet_id     = aws_subnet.pubsubnets[0].id
+
+  tags = {
+    Name = "${var.envname}-natgw"
+  }
+}
+
+#public route
+
+resource "aws_route_table" "publicroute" {
+  vpc_id = aws_vpc.petclinic.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.gw.id
+  }
+  tags = {
+    Name = "${var.envname}-publicroute"
+  }
+
+}
+
+#private route
+
+resource "aws_route_table" "privateroute" {
+  vpc_id = aws_vpc.petclinic.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    nat_gateway_id = aws_nat_gateway.natgw.id
+  }
+  tags = {
+    Name = "${var.envname}-privateroute"
+  }
+
+}
+
+#data route
+
+resource "aws_route_table" "dataroute" {
+  vpc_id = aws_vpc.petclinic.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    nat_gateway_id = aws_nat_gateway.natgw.id
+  }
+  tags = {
+    Name = "${var.envname}-dataroute"
+  }
+
+}
+
+#route table association
+
+resource "aws_route_table_association" "pubsub-association" {
+  count = length(var.pubsubnets)
+  subnet_id      = element(aws_subnet.pubsubnets.*.id,count.index)
+  route_table_id = aws_route_table.publicroute.id
+}
+
+
+resource "aws_route_table_association" "privsub-association" {
+  count = length(var.privsubnets)
+  subnet_id      = element(aws_subnet.privsubnets.*.id,count.index)
+  route_table_id = aws_route_table.privateroute.id
+}
+
+resource "aws_route_table_association" "datasub-association" {
+  count = length(var.datasubnets)
+  subnet_id      = element(aws_subnet.datasubnets.*.id,count.index)
+  route_table_id = aws_route_table.dataroute.id
+}
+
+#apache.sh
+
+#!/bin/bash
+yum update -y
+yum install httpd -y
+systemctl start httpd
+systemctl enable httpd
+echo "hii krishna" >/var/www/html/index.html
+
+#bastion.tfvars
+
+region = "ap-northeast-1"
+cidr = "10.1.0.0/16"
+envname = "tera-dev"
+pubsubnets = ["10.1.0.0/24","10.1.1.0/24","10.1.2.0/24"]
+privsubnets = ["10.1.3.0/24","10.1.4.0/24","10.1.5.0/24"]
+datasubnets = ["10.1.6.0/24","10.1.7.0/24","10.1.8.0/24"]
+azs = ["ap-northeast-1a","ap-northeast-1c","ap-northeast-1d"]
+ami = "ami-09ebacdc178ae23b7"
+type = "t2.micro"
+
+#bastion.tf
+
+resource "aws_security_group" "bastion" {
+  name        = "bastion"
+  description = "Allow ssh inbound traffic"
+  vpc_id      = aws_vpc.petclinic.id
+
+  ingress {
+    description      = "ssh from VPC"
+    from_port        = 22
+    to_port          = 22
+    protocol         = "tcp"
+    cidr_blocks      = ["0.0.0.0/0"]
+
+  }
+
+  egress {
+    from_port        = 0
+    to_port          = 0
+    protocol         = "-1"
+    cidr_blocks      = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
+  }
+
+  tags = {
+    Name = "${var.envname}-bastionsg"
+  }
+}
+
+resource "aws_key_pair" "krishna1" {
+  key_name   = "krishna1"
+  public_key = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDU0Jj9hTh2nuNah54c+plW24IIccyYh+NFdDU5KkY8NI1MFH2PFJCOO25RsxO4As3sJtv4QQbNmQOGqNpvO7R1+lcdgg8fsR9TcX3ulE2W0zvl77XNJBWvUUjDUx8xfa0W9Bn2wHnszP936IjbtbCU2ZuVL7X59XbeDjVlc0ofmyh/YdGyCbVoUenxYBg5ZATDmLqQbLG74qrINGvWuHxq+JOSBw96h7oDCc/ww/URvxNvEDKg0MBMSSgVSexPpmAUbox81+3LsyFvMAS/TNhXYjtOupk1bBFk4QxinbfaHKJvRB8VLbro8GrKGy+mXI4eD9yqJS9zAMvuDGSCrubbRehChRwoY4u8LbgQqu5rQjurM5lfB2k8QWfQ8YUdGsiwkuD0KWGz5xFUg5AJDTjhRv2j/dowONCXLh+YQkyt9rTH7mGVyFQXxsFsZK2vNPcxB5G5eSBLt1OSn9SUGle9yW89uMUMKziaWOYpUYFrVnoKOP0eZhvGyB41oAT/aU8= ELCOT@Lenovo"
+}
+
+resource "aws_instance" "bastion" {
+  ami           = var.ami
+  instance_type = var.type
+  key_name = aws_key_pair.krishna1.id
+  vpc_security_group_ids = ["${aws_security_group.bastion.id}"]
+  subnet_id = "${aws_subnet.pubsubnets[0].id}"
+
+  tags = {
+    Name = "${var.envname}-bastion"
+  }
+}
+
+
+#r53.tf
+
+resource "aws_route53_zone" "kkmn-hostedzone" {
+  name = "kkmn.info"
+
+  tags = {
+    Environment = "dev"
+  }
+}
+
+
+
+resource "aws_route53_record" "apache2" {
+  zone_id = aws_route53_zone.kkmn-hostedzone.zone_id
+  name    = "apache2.kkmn.info"
+  type    = "A"
+  ttl     = "300"
+  records = [aws_eip.nateip.public_ip]
+}
+
+
+#jenkins user data
+
+#!/bin/bash
+sudo yum -y update
+
+
+echo "Install git"
+yum install -y git
+
+echo "Install Docker engine"
+yum update -y
+yum install docker -y
+#sudo usermod -a -G docker jenkins
+#sudo service docker start
+sudo chkconfig docker on
+
+#!/bin/bash
+#Download the java
+cd /tmp
+wget -c --header "Cookie: oraclelicense=accept-securebackup-cookie" http://download.oracle.com/otn-pub/java/jdk/8u131-b11/d54c1d3a095b4ff2b6607d096fa80163/jdk-8u131-linux-x64.rpm
+#install java by using the rpm command
+rpm -ivh jdk-8u131-linux-x64.rpm
+#delete the rpm after java installatin
+rm -f jdk-8u131-linux-x64.rpm
+
+#jenkins installatin
+#Enable EPEL
+wget -O /etc/yum.repos.d/jenkins.repo \
+    https://pkg.jenkins.io/redhat-stable/jenkins.repo
+#installing jenkins with rpm
+rpm --import https://pkg.jenkins.io/redhat-stable/jenkins.io.key
+#update
+yum update -y
+#install jenkins
+yum install jenkins -y
+#start
+systemctl start jenkins
+#enable the OS level service
+systemctl enable jenkins
+#check status
+
+#tomcat user data
+
+#!bin/bash
+cd /opt
+#download  the java
+wget -c --header "Cookie: oraclelicense=accept-securebackup-cookie" http://download.oracle.com/otn-pub/java/jdk/8u131-b11/d54c1d3a095b4ff2b6607d096fa80163/jdk-8u131-linux-x64.rpm
+# istall the java with
+rpm -ivh jdk-8u131-linux-x64.rpm
+# install tomcat
+wget https://mirrors.estointernet.in/apache/tomcat/tomcat-9/v9.0.50/bin/apache-tomcat-9.0.50-windows-x64.zip
+#unzip the tomcat
+unzip apache-tomcat-9.0.50-windows-x64.zip
+
+#rename tomcat
+mv apache-tomcat-9.0.50 tomcat9
+# change the permissions
+chmod -R 700 tomcat9
+# remove the zip file
+rm -f apache-tomcat-9.0.50-windows-x64.zip
+#change the path
+cd /opt/tomcat9/bin
+# start the apache  pre req is the java for the tomacat
+./startup.sh
+
+
+#jenkins.tf
+
+resource "aws_lb" "jenkins-alb" {
+  name               = "jenkins-alb"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.alb.id]
+  subnets            = ["${aws_subnet.pubsubnets[1].id}", "${aws_subnet.pubsubnets[2].id}"]
+
+  enable_deletion_protection = true
+
+
+  tags = {
+    Environment = "stg"
+  }
+}
+
+
+# instance target group
+
+resource "aws_lb_target_group" "jenkins-tg" {
+  name     = "jenkins-tg"
+  port     = 8080
+  protocol = "HTTP"
+  vpc_id   = aws_vpc.petclinic.id
+}
+
+
+
+resource "aws_lb_target_group_attachment" "testing" {
+  target_group_arn = aws_lb_target_group.jenkins-tg.arn
+  target_id        = aws_instance.jenkins.id
+  port             = 8080
+}
+
+
+
+
+
+# listner
+
+
+resource "aws_lb_listener" "r_end" {
+  load_balancer_arn = aws_lb.jenkins-alb.arn
+  port              = "80"
+  protocol          = "HTTP"
+
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.jenkins-tg.arn
+  }
+}
+
+#jenkinsuserdata
+
+data "template_file" "userdata1" {
+  template = "${file("jenkinsuserdata.sh")}"
+
+}
+
+
+#jenkins instance
+
+resource "aws_instance" "jenkins" {
+  ami           = var.ami
+  instance_type = var.type
+  key_name = aws_key_pair.krishna1.id
+  vpc_security_group_ids = ["${aws_security_group.tomcat.id}"]
+  subnet_id = aws_subnet.privsubnets[1].id
+  user_data = data.template_file.userdata1.rendered
+
+  tags = {
+    Name = "${var.envname}-jenkins"
+  }
+}
+
+
+
+resource "aws_route53_record" "jenkins" {
+  zone_id = aws_route53_zone.kkmn-hostedzone.zone_id
+  name    = "jenkins.kkmn.info"
+  type    = "A"
+  ttl     = "300"
+  records = [aws_eip.nateip.public_ip]
+}
+
+
+#apache.tf
+
+resource "aws_security_group" "tomcat" {
+  name        = "tomcat"
+  description = "Allow http and ssh inbound traffic"
+  vpc_id      = aws_vpc.petclinic.id
+
+  ingress {
+    description      = "ssh from VPC"
+    from_port        = 22
+    to_port          = 22
+    protocol         = "tcp"
+    security_groups       = ["${aws_security_group.bastion.id}"]
+
+  }
+ ingress {
+    description      = "http from VPC"
+    from_port        = 8080
+    to_port          = 8080
+    protocol         = "tcp"
+    security_groups       = ["${aws_security_group.alb.id}"]
+
+  }
+
+  egress {
+    from_port        = 0
+    to_port          = 0
+    protocol         = "-1"
+    cidr_blocks      = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
+  }
+
+  tags = {
+    Name = "${var.envname}-tomcatsg"
+  }
+}
+
+data "template_file" "userdata" {
+  template = "${file("apache.sh")}"
+
+}
+
+
+resource "aws_instance" "tomcat" {
+  ami           = var.ami
+  instance_type = var.type
+  key_name = aws_key_pair.krishna1.id
+  vpc_security_group_ids = ["${aws_security_group.tomcat.id}"]
+  subnet_id = aws_subnet.privsubnets[0].id
+  user_data = data.template_file.userdata.rendered
+
+  tags = {
+    Name = "${var.envname}-tomcat"
+   }
+}
+
+#tomcat.tf
+
+
+resource "aws_lb_target_group" "tomcat-tg" {
+  name     = "tomcat-tg"
+  port     = 8080
+  protocol = "HTTP"
+  vpc_id   = aws_vpc.petclinic.id
+}
+
+
+
+resource "aws_lb_target_group_attachment" "testing1" {
+  target_group_arn = aws_lb_target_group.tomcat-tg.arn
+  target_id        = aws_instance.tomcat1.id
+  port             = 8080
+}
+
+data "template_file" "userdata2" {
+  template = "${file("tomcatuserdata.sh")}"
+
+}
+
+
+resource "aws_instance" "tomcat1" {
+  ami           = var.ami
+  instance_type = var.type
+  key_name = aws_key_pair.krishna1.id
+  vpc_security_group_ids = ["${aws_security_group.tomcat.id}"]
+  subnet_id = aws_subnet.privsubnets[0].id
+  user_data = data.template_file.userdata2.rendered
+
+  tags = {
+    Name = "${var.envname}-tomcat1"
+  }
+}
+
+
+
+
+
+# listner
+
+
+resource "aws_lb_listener" "r_end1" {
+  load_balancer_arn = aws_lb.jenkins-alb.arn
+  port              = "80"
+  protocol          = "HTTP"
+
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.jenkins-tg.arn
+  }
+}
+
+resource "aws_route53_record" "tomcat1" {
+  zone_id = aws_route53_zone.kkmn-hostedzone.zone_id
+  name    = "tomcat.kkmn.info"
+  type    = "A"
+  ttl     = "300"
+  records = [aws_eip.nateip.public_ip]
+}
+
+
+#rds.tf
+
+resource "aws_security_group" "rds" {
+  name        = "rds"
+  description = "Allow 8080 and ssh inbound traffic"
+  vpc_id      = aws_vpc.petclinic.id
+
+  ingress {
+    description      = "ssh from VPC"
+    from_port        = 3306
+    to_port          = 3306
+    protocol         = "tcp"
+    security_groups       = ["${aws_security_group.bastion.id}"]
+
+  }
+ ingress {
+    description      = "http from VPC"
+    from_port        = 3306
+    to_port          = 3306
+    protocol         = "tcp"
+    security_groups       = ["${aws_security_group.tomcat.id}"]
+
+  }
+
+  egress {
+    from_port        = 0
+    to_port          = 0
+    protocol         = "-1"
+    cidr_blocks      = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
+  }
+
+  tags = {
+    Name = "${var.envname}-rdssg"
+  }
+}
+
+resource "aws_db_subnet_group" "db-subnetgroup" {
+  name       = "db-subnetgroup"
+  subnet_ids = [ aws_subnet.datasubnets[1].id, aws_subnet.datasubnets[2].id]
+
+  tags = {
+    Name = "${var.envname}-rdssubnet-group"
+  }
+}
+
+
+resource "aws_db_instance" "mysql" {
+  allocated_storage    = 10
+  engine               = "mysql"
+  engine_version       = "5.7"
+  instance_class       = "db.t3.micro"
+  name                 = "mydb"
+  username             = "krishna"
+  password             = "9573972811Mahi"
+  parameter_group_name = "default.mysql5.7"
+  skip_final_snapshot  = true
+  db_subnet_group_name   = aws_db_subnet_group.db-subnetgroup.name
+  vpc_security_group_ids = ["${aws_security_group.rds.id}"]
+
+}
+
+
+#alb.tf
+
+
+#alb-sg
+
+resource "aws_security_group" "alb" {
+  name        = "alb"
+  description = "Allow http inbound traffic"
+  vpc_id      = aws_vpc.petclinic.id
+
+  ingress {
+    description      = "http from VPC"
+    from_port        = 80
+    to_port          = 80
+    protocol         = "tcp"
+    cidr_blocks      = ["0.0.0.0/0"]
+
+  }
+
+  egress {
+    from_port        = 0
+    to_port          = 0
+    protocol         = "-1"
+    cidr_blocks      = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
+  }
+
+  tags = {
+    Name = "${var.envname}-albsg"
+  }
+}
+
+resource "aws_lb" "apache-alb" {
+  name               = "apache-alb"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.alb.id]
+  security_groups    = [aws_security_group.albsg.id]
+  subnets            = ["${aws_subnet.pubsubnets[1].id}", "${aws_subnet.pubsubnets[2].id}"]
+
+  enable_deletion_protection = true
+
+
+  tags = {
+    Environment = "dev"
+  }
+}
+
+
+# instance target group
+
+resource "aws_lb_target_group" "apache-tg" {
+  name     = "apache-tg"
+  port     = 8080
+  protocol = "HTTP"
+  vpc_id   = aws_vpc.petclinic.id
+}
+
+
+
+resource "aws_lb_target_group_attachment" "attach-tg" {
+  target_group_arn = aws_lb_target_group.apache-tg.arn
+  target_id        = aws_instance.tomcat.id
+  port             = 8080
+}
+
+# listner
+
+
+resource "aws_lb_listener" "front_end" {
+  load_balancer_arn = aws_lb.apache-alb.arn
+  port              = "80"
+  protocol          = "HTTP"
+
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.apache-tg.arn
+  }
+}
+
+#route53
+
+
+resource "aws_route53_zone" "kkmn-hostedzone" {
+  name = "kkmn.info"
+
+  tags = {
+    Environment = "dev"
+  }
+}
+
+
+
+resource "aws_route53_record" "apache2" {
+  zone_id = aws_route53_zone.kkmn-hostedzone.zone_id
+  name    = "apache2.kkmn.info"
+  type    = "A"
+  ttl     = "300"
+  records = [aws_eip.nateip.public_ip]
+}
+
